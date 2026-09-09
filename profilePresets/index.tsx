@@ -24,12 +24,24 @@ interface ProfilePreset {
     id: string;
     name: string;
     createdAt: number;
+
     avatar: string | null;
     banner: string | null;
+
     accentColor: number | null;
     themeColors: [number, number] | null;
-    decoration: DecorationData | null;
+
+    avatarDecorationSkuId: string | null;
+    nameplateSkuId: string | null;
+
+    displayNameFontId: number | null;
+    displayNameEffectId: number | null;
+    displayNameColors: number[] | null;
+
     profileEffectId: string | null;
+    profileFrameSkuId: string | null;
+
+    collectibles: Record<string, any> | null;
 }
 
 const UserProfileStore = findStoreLazy("UserProfileStore");
@@ -85,60 +97,216 @@ async function fetchCurrentProfile(userId: string): Promise<any> {
     return response?.body?.user_profile ?? response?.body ?? {};
 }
 
-function readDecoration(user: any): DecorationData | null {
-    const value = user?.avatarDecorationData ?? user?.avatar_decoration_data;
+function snakeOrCamel(obj: any, snake: string, camel: string) {
+    return obj?.[snake] ?? obj?.[camel] ?? null;
+}
 
+function getSkuId(value: any): string | null {
     if (!value)
         return null;
 
-    return {
-        asset: value.asset ?? null,
-        skuId: value.skuId ?? value.sku_id ?? null
-    };
+    return String(value.sku_id ?? value.skuId ?? value.id ?? "") || null;
+}
+
+async function fetchCurrentAccount(): Promise<any> {
+    const response = await RestAPI.get({
+        url: "/users/@me"
+    });
+
+    return response?.body ?? UserStore.getCurrentUser();
+}
+
+async function fetchCurrentPublicUser(userId: string): Promise<any> {
+    const response = await RestAPI.get({
+        url: `/users/${userId}`
+    });
+
+    return response?.body ?? {};
 }
 
 async function capturePreset(name: string): Promise<ProfilePreset> {
-    const user: any = UserStore.getCurrentUser();
+    const cachedUser: any = UserStore.getCurrentUser();
 
-    if (!user)
+    if (!cachedUser)
         throw new Error("Discord has not loaded your account yet.");
 
-    const profile = await fetchCurrentProfile(user.id);
+    const [account, publicUser, fullProfile] = await Promise.all([
+        fetchCurrentAccount(),
+        fetchCurrentPublicUser(cachedUser.id),
+        RestAPI.get({
+            url: `/users/${cachedUser.id}/profile`,
+            query: {
+                with_mutual_guilds: false,
+                with_mutual_friends_count: false,
+                type: "you_screen"
+            }
+        }).then(r => r?.body ?? {})
+    ]);
 
-    const avatarHash = user.avatar ?? null;
-    const bannerHash = user.banner ?? profile.banner ?? null;
+    const profileUser = fullProfile?.user ?? publicUser ?? account ?? cachedUser;
+    const profile = fullProfile?.user_profile ?? {};
 
-    const avatar = avatarHash
-        ? await imageToDataUri(cdnUrl("avatars", user.id, avatarHash))
-        : null;
+    const avatarHash =
+        profileUser?.avatar ??
+        publicUser?.avatar ??
+        account?.avatar ??
+        cachedUser?.avatar ??
+        null;
 
-    const banner = bannerHash
-        ? await imageToDataUri(cdnUrl("banners", user.id, bannerHash))
-        : null;
+    const bannerHash =
+        profileUser?.banner ??
+        publicUser?.banner ??
+        account?.banner ??
+        profile?.banner ??
+        cachedUser?.banner ??
+        null;
 
-    const rawThemeColors = profile.themeColors ?? profile.theme_colors ?? null;
+    const [avatar, banner] = await Promise.all([
+        avatarHash
+            ? imageToDataUri(cdnUrl("avatars", cachedUser.id, avatarHash))
+            : Promise.resolve(null),
+        bannerHash
+            ? imageToDataUri(cdnUrl("banners", cachedUser.id, bannerHash))
+            : Promise.resolve(null)
+    ]);
+
+    const rawThemeColors =
+        profile?.theme_colors ??
+        profile?.themeColors ??
+        null;
 
     const themeColors =
         Array.isArray(rawThemeColors) && rawThemeColors.length >= 2
             ? [Number(rawThemeColors[0]), Number(rawThemeColors[1])] as [number, number]
             : null;
 
+    const avatarDecoration =
+        snakeOrCamel(account, "avatar_decoration_data", "avatarDecorationData") ??
+        snakeOrCamel(publicUser, "avatar_decoration_data", "avatarDecorationData") ??
+        snakeOrCamel(profileUser, "avatar_decoration_data", "avatarDecorationData") ??
+        snakeOrCamel(cachedUser, "avatar_decoration_data", "avatarDecorationData");
+
+    const collectibles =
+        snakeOrCamel(account, "collectibles", "collectibles") ??
+        snakeOrCamel(publicUser, "collectibles", "collectibles") ??
+        snakeOrCamel(profileUser, "collectibles", "collectibles") ??
+        snakeOrCamel(cachedUser, "collectibles", "collectibles") ??
+        null;
+
+    const nameplate =
+        collectibles?.nameplate ??
+        collectibles?.namePlate ??
+        null;
+
+    const profileFrame =
+        collectibles?.profile_frame ??
+        collectibles?.profileFrame ??
+        collectibles?.frame ??
+        profile?.profile_frame ??
+        profile?.profileFrame ??
+        null;
+
+    const displayNameStyles =
+        snakeOrCamel(account, "display_name_styles", "displayNameStyles") ??
+        snakeOrCamel(publicUser, "display_name_styles", "displayNameStyles") ??
+        snakeOrCamel(profileUser, "display_name_styles", "displayNameStyles") ??
+        snakeOrCamel(cachedUser, "display_name_styles", "displayNameStyles") ??
+        null;
+
+    const profileEffect =
+        profile?.profile_effect ??
+        profile?.profileEffect ??
+        null;
+
     return {
         id: crypto.randomUUID(),
         name,
         createdAt: Date.now(),
+
         avatar,
         banner,
-        accentColor: profile.accentColor ?? profile.accent_color ?? null,
+
+        accentColor:
+            profile?.accent_color ??
+            profile?.accentColor ??
+            profileUser?.accent_color ??
+            profileUser?.accentColor ??
+            account?.accent_color ??
+            account?.accentColor ??
+            null,
+
         themeColors,
-        decoration: readDecoration(user),
-        profileEffectId: profile.profileEffectId ?? profile.profile_effect_id ?? null
+
+        avatarDecorationSkuId: getSkuId(avatarDecoration),
+        nameplateSkuId: getSkuId(nameplate),
+
+        displayNameFontId:
+            displayNameStyles?.font_id ??
+            displayNameStyles?.fontId ??
+            null,
+
+        displayNameEffectId:
+            displayNameStyles?.effect_id ??
+            displayNameStyles?.effectId ??
+            null,
+
+        displayNameColors:
+            Array.isArray(displayNameStyles?.colors)
+                ? displayNameStyles.colors.map(Number)
+                : null,
+
+        profileEffectId:
+            String(
+                profileEffect?.id ??
+                profileEffect?.sku_id ??
+                profileEffect?.skuId ??
+                profile?.profile_effect_id ??
+                profile?.profileEffectId ??
+                ""
+            ) || null,
+
+        profileFrameSkuId: getSkuId(profileFrame),
+
+        collectibles: collectibles ? structuredClone(collectibles) : null
     };
 }
 
-async function patchProfile(body: Record<string, unknown>) {
+
+function presetSnapshotSummary(preset: ProfilePreset): string {
+    const found = [
+        preset.avatar ? "Avatar ✓" : "Avatar ✗",
+        preset.banner ? "Banner ✓" : "Banner ✗",
+        preset.avatarDecorationSkuId ? "Decoration ✓" : "Decoration ✗",
+        preset.nameplateSkuId ? "Nameplate ✓" : "Nameplate ✗",
+        preset.profileEffectId ? "Effect ✓" : "Effect ✗",
+        preset.themeColors?.length ? "Theme ✓" : "Theme ✗",
+        preset.displayNameColors?.length || preset.displayNameFontId || preset.displayNameEffectId
+            ? "Display name ✓"
+            : "Display name ✗"
+    ];
+
+    return found.join(" · ");
+}
+
+function errorText(error: any): string {
+    return String(
+        error?.body?.message ??
+        error?.message ??
+        error?.status ??
+        "unknown error"
+    );
+}
+
+async function patchAccount(body: Record<string, unknown>) {
     await RestAPI.patch({
         url: "/users/@me",
+        body
+    });
+}
+
+async function patchUserProfile(body: Record<string, unknown>) {
+    await RestAPI.patch({
+        url: "/users/@me/profile",
         body
     });
 }
@@ -146,52 +314,69 @@ async function patchProfile(body: Record<string, unknown>) {
 async function applyPreset(preset: ProfilePreset): Promise<string[]> {
     const failures: string[] = [];
 
-    // Apply each section independently, so a rejected premium item does not
-    // prevent the avatar or banner from changing.
-    try {
-        await patchProfile({ avatar: preset.avatar });
-    } catch (error) {
-        console.error("[ProfilePresets] Avatar failed", error);
-        failures.push("avatar");
+    async function accountField(label: string, body: Record<string, unknown>) {
+        try {
+            await patchAccount(body);
+        } catch (error) {
+            console.error(`[ProfilePresets] ${label} failed`, error);
+            failures.push(`${label}: ${errorText(error)}`);
+        }
     }
 
-    try {
-        await patchProfile({ banner: preset.banner });
-    } catch (error) {
-        console.error("[ProfilePresets] Banner failed", error);
-        failures.push("banner");
+    async function profileField(label: string, body: Record<string, unknown>) {
+        try {
+            await patchUserProfile(body);
+        } catch (error) {
+            console.error(`[ProfilePresets] ${label} failed`, error);
+            failures.push(`${label}: ${errorText(error)}`);
+        }
     }
 
-    try {
-        await patchProfile({
-            accent_color: preset.accentColor,
+    // One field per request so a rejection cannot hide which field is wrong.
+    await accountField("avatar", { avatar: preset.avatar });
+    await accountField("banner", { banner: preset.banner });
+
+    if (preset.avatarDecorationSkuId)
+        await accountField("decoration", {
+            avatar_decoration_sku_id: preset.avatarDecorationSkuId
+        });
+
+    if (preset.nameplateSkuId)
+        await accountField("nameplate", {
+            nameplate_sku_id: preset.nameplateSkuId
+        });
+
+    if (
+        preset.displayNameFontId !== null ||
+        preset.displayNameEffectId !== null ||
+        preset.displayNameColors?.length
+    ) {
+        await accountField("display name", {
+            display_name_font_id: preset.displayNameFontId,
+            display_name_effect_id: preset.displayNameEffectId,
+            display_name_colors: preset.displayNameColors
+        });
+    }
+
+    if (preset.accentColor !== null)
+        await profileField("accent color", {
+            accent_color: preset.accentColor
+        });
+
+    if (preset.themeColors?.length)
+        await profileField("theme colors", {
             theme_colors: preset.themeColors
         });
-    } catch (error) {
-        console.error("[ProfilePresets] Colours failed", error);
-        failures.push("colours");
-    }
 
-    try {
-        await patchProfile({
-            avatar_decoration_id: preset.decoration?.skuId ?? null
-        });
-    } catch (error) {
-        console.error("[ProfilePresets] Decoration failed", error);
-        failures.push("decoration");
-    }
-
-    try {
-        await patchProfile({
+    if (preset.profileEffectId)
+        await profileField("profile effect", {
             profile_effect_id: preset.profileEffectId
         });
-    } catch (error) {
-        console.error("[ProfilePresets] Effect failed", error);
-        failures.push("effect");
-    }
 
     return failures;
 }
+
+
 
 function css(element: HTMLElement, styles: Partial<CSSStyleDeclaration>) {
     Object.assign(element.style, styles);
@@ -443,13 +628,7 @@ async function openModal() {
         });
 
         const details = document.createElement("div");
-        details.textContent = [
-            preset.avatar ? "Avatar" : null,
-            preset.banner ? "Banner" : null,
-            preset.themeColors || preset.accentColor !== null ? "Colours" : null,
-            preset.decoration?.skuId ? "Decoration" : null,
-            preset.profileEffectId ? "Effect" : null
-        ].filter(Boolean).join(" · ") || "Empty preset";
+        details.textContent = presetSnapshotSummary(preset);
 
         css(details, {
             marginTop: "3px",
@@ -557,7 +736,7 @@ let interval: number | null = null;
 
 export default definePlugin({
     name: "ProfilePresets",
-    description: "Save and apply profile presets from Discord's Profiles page.",
+    description: "Save and restore Discord profile presets. Avatar decorations are captured from the fresh account response and restored in a dedicated update.",
     authors: [
         {
             name: "twitch.tv/yonaaw_",
